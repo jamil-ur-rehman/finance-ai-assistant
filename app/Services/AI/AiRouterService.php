@@ -4,6 +4,7 @@ namespace App\Services\AI;
 
 use App\Contracts\Ai\LlmClientInterface;
 use App\Models\User;
+use App\Models\UserMemory;
 use App\Services\Finance\BudgetService;
 use App\Services\Finance\InsightService;
 use App\Services\Finance\SpendingService;
@@ -23,6 +24,7 @@ class AiRouterService
     public function __construct(
         private readonly LlmClientInterface $llmClient,
         private readonly PromptBuilderService $promptBuilder,
+        private readonly ResponseFormatterService $responseFormatter,
         private readonly SpendingService $spendingService,
         private readonly InsightService $insightService,
         private readonly BudgetService $budgetService,
@@ -31,7 +33,14 @@ class AiRouterService
     /**
      * @return array{
      *     success: bool,
-     *     data?: array{intent: string, result: array<string, mixed>|null, insights?: array<string, mixed>, message: string},
+     *     data?: array{
+     *         intent: string,
+     *         result: array<string, mixed>|null,
+     *         insights?: array<string, mixed>,
+     *         message: string,
+     *         breakdown?: array<string, mixed>,
+     *         suggestions?: array<int, string>
+     *     },
      *     error?: string
      * }
      */
@@ -46,14 +55,32 @@ class AiRouterService
             ];
         }
 
+        $result = is_array($routed['result']) ? $routed['result'] : [];
+        $insights = $routed['intent'] === 'insight_query' ? $result : [];
+
+        $formatted = $this->responseFormatter->format(
+            $routed['intent'],
+            $result,
+            $insights,
+            $this->buildContext($user)
+        );
+
         $data = [
             'intent' => $routed['intent'],
             'result' => $routed['result'],
-            'message' => $this->buildHumanSummary($routed),
+            'message' => $formatted['message'],
         ];
 
-        if ($routed['intent'] === 'insight_query' && is_array($routed['result'])) {
-            $data['insights'] = $routed['result'];
+        if (isset($formatted['breakdown'])) {
+            $data['breakdown'] = $formatted['breakdown'];
+        }
+
+        if (! empty($formatted['suggestions'])) {
+            $data['suggestions'] = $formatted['suggestions'];
+        }
+
+        if ($routed['intent'] === 'insight_query') {
+            $data['insights'] = $result;
         }
 
         return [
@@ -289,45 +316,21 @@ class AiRouterService
     }
 
     /**
-     * @param  array{intent: string, result: array<string, mixed>|null, parameters?: array<string, mixed>}  $routed
+     * @return array<string, mixed>
      */
-    private function buildHumanSummary(array $routed): string
+    private function buildContext(User $user): array
     {
-        $intent = $routed['intent'];
-        $result = $routed['result'] ?? [];
-        $parameters = $routed['parameters'] ?? [];
+        $memories = UserMemory::query()
+            ->where('user_id', $user->id)
+            ->pluck('value', 'key');
 
-        return match ($intent) {
-            'spending_query' => $this->summarizeSpending($result, $parameters),
-            'insight_query' => is_string($result['message'] ?? null)
-                ? $result['message']
-                : 'Here are your financial insights.',
-            'budget_query' => is_string($result['message'] ?? null)
-                ? $result['message']
-                : 'Here is your budget overview.',
-            default => 'Request processed successfully.',
-        };
-    }
+        $context = [];
 
-    /**
-     * @param  array<string, mixed>  $result
-     * @param  array<string, mixed>  $parameters
-     */
-    private function summarizeSpending(array $result, array $parameters): string
-    {
-        $total = $result['total_spend'] ?? 0;
-        $category = $parameters['category'] ?? null;
-
-        if ($category) {
-            $categoryTotal = $result['by_category'][$category] ?? $total;
-
-            return sprintf(
-                'You spent $%s on %s.',
-                number_format((float) $categoryTotal, 2),
-                $category
-            );
+        foreach ($memories as $key => $value) {
+            $decoded = json_decode((string) $value, true);
+            $context[(string) $key] = json_last_error() === JSON_ERROR_NONE ? $decoded : $value;
         }
 
-        return sprintf('Your total spending is $%s.', number_format((float) $total, 2));
+        return $context;
     }
 }
