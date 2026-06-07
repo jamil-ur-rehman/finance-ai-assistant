@@ -7,13 +7,13 @@ const input = ref('');
 const loading = ref(false);
 const messagesContainer = ref(null);
 
-async function ensureCsrfCookie() {
-    await fetch('/sanctum/csrf-cookie', {
-        credentials: 'same-origin',
-    });
-}
-
 function getCsrfToken() {
+    const metaToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+
+    if (metaToken) {
+        return metaToken;
+    }
+
     const match = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
 
     return match ? decodeURIComponent(match[1]) : '';
@@ -40,15 +40,14 @@ async function sendMessage() {
     await scrollToBottom();
 
     try {
-        await ensureCsrfCookie();
-
-        const response = await fetch('/api/chat', {
+        const response = await fetch('/chat', {
             method: 'POST',
             credentials: 'same-origin',
             headers: {
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
-                'X-XSRF-TOKEN': getCsrfToken(),
+                'X-CSRF-TOKEN': getCsrfToken(),
+                'X-Requested-With': 'XMLHttpRequest',
             },
             body: JSON.stringify({ message }),
         });
