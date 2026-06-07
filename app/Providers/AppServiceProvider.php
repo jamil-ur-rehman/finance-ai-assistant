@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Contracts\Ai\LlmClientInterface;
 use App\Services\AI\OpenAiLlmClient;
+use Illuminate\Support\Facades\Vite;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -21,6 +22,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        Vite::prefetch(concurrency: 3);
     }
 }

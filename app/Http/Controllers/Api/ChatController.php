@@ -32,7 +32,16 @@ class ChatController extends Controller
                 ], 422);
             }
 
-            $response = $this->aiRouter->handle($request->user(), $message);
+            $user = auth()->user();
+
+            if ($user === null) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'Unauthenticated.',
+                ], 401);
+            }
+
+            $response = $this->aiRouter->handle($user, $message);
 
             $status = ($response['success'] ?? false) ? 200 : 422;
 
@@ -41,7 +50,7 @@ class ChatController extends Controller
             throw $exception;
         } catch (Throwable $exception) {
             Log::error('Chat API failure', [
-                'user_id' => $request->user()?->id,
+                'user_id' => auth()->id(),
                 'error' => $exception->getMessage(),
             ]);
 

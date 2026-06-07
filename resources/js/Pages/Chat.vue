@@ -1,4 +1,5 @@
 <script setup>
+import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
 import { nextTick, ref } from 'vue';
 
 const messages = ref([]);
@@ -82,59 +83,61 @@ function onKeydown(event) {
 </script>
 
 <template>
-    <div class="min-h-screen bg-gray-50 text-gray-900">
-        <div class="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6">
-            <header class="mb-4 border-b border-gray-200 pb-4">
-                <h1 class="text-2xl font-semibold">Finance Assistant</h1>
-                <p class="mt-1 text-sm text-gray-600">Ask about spending, insights, or budgets.</p>
-            </header>
-
-            <div
-                ref="messagesContainer"
-                class="mb-4 flex-1 space-y-3 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
-            >
-                <p v-if="messages.length === 0" class="text-sm text-gray-500">
-                    Start a conversation by typing a message below.
-                </p>
+    <AuthenticatedLayout>
+        <div class="py-6">
+            <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
+                <header class="mb-4 border-b border-gray-200 pb-4">
+                    <h1 class="text-2xl font-semibold text-gray-900">Finance Assistant</h1>
+                    <p class="mt-1 text-sm text-gray-600">Ask about spending, insights, or budgets.</p>
+                </header>
 
                 <div
-                    v-for="(message, index) in messages"
-                    :key="index"
-                    class="flex"
-                    :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
+                    ref="messagesContainer"
+                    class="mb-4 h-[60vh] space-y-3 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4"
                 >
+                    <p v-if="messages.length === 0" class="text-sm text-gray-500">
+                        Start a conversation by typing a message below.
+                    </p>
+
                     <div
-                        class="max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
-                        :class="
-                            message.role === 'user'
-                                ? 'bg-blue-600 text-white'
-                                : 'bg-gray-100 text-gray-900'
-                        "
+                        v-for="(message, index) in messages"
+                        :key="index"
+                        class="flex"
+                        :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
                     >
-                        {{ message.content }}
+                        <div
+                            class="max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
+                            :class="
+                                message.role === 'user'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-100 text-gray-900'
+                            "
+                        >
+                            {{ message.content }}
+                        </div>
                     </div>
+
+                    <p v-if="loading" class="text-sm text-gray-500">Assistant is thinking...</p>
                 </div>
 
-                <p v-if="loading" class="text-sm text-gray-500">Assistant is thinking...</p>
+                <form class="flex gap-2" @submit.prevent="sendMessage">
+                    <input
+                        v-model="input"
+                        type="text"
+                        placeholder="Ask a finance question..."
+                        class="flex-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                        :disabled="loading"
+                        @keydown="onKeydown"
+                    />
+                    <button
+                        type="submit"
+                        class="rounded-md bg-gray-800 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+                        :disabled="loading || !input.trim()"
+                    >
+                        Send
+                    </button>
+                </form>
             </div>
-
-            <form class="flex gap-2" @submit.prevent="sendMessage">
-                <input
-                    v-model="input"
-                    type="text"
-                    placeholder="Ask a finance question..."
-                    class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                    :disabled="loading"
-                    @keydown="onKeydown"
-                />
-                <button
-                    type="submit"
-                    class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-                    :disabled="loading || !input.trim()"
-                >
-                    Send
-                </button>
-            </form>
         </div>
-    </div>
+    </AuthenticatedLayout>
 </template>
