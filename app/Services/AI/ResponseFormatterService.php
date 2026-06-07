@@ -46,6 +46,10 @@ class ResponseFormatterService
             );
         }
 
+        if ($this->hasIgnoredCategories($context)) {
+            $lines[] = 'Totals exclude your saved category preferences.';
+        }
+
         $trend = $this->describeMonthlyTrend($byMonth);
 
         if ($trend !== null) {

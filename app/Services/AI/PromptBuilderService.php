@@ -4,9 +4,14 @@ namespace App\Services\AI;
 
 class PromptBuilderService
 {
-    public function buildIntentClassificationPrompt(): string
+    /**
+     * @param  array<int, string>  $memoryLines
+     */
+    public function buildIntentClassificationPrompt(array $memoryLines = []): string
     {
-        return <<<'PROMPT'
+        $memorySection = $this->formatMemorySection($memoryLines);
+
+        return <<<PROMPT
 You are an intent classifier for a personal finance assistant.
 
 Your ONLY job is to classify the user's message and extract routing parameters.
@@ -43,6 +48,14 @@ Parameter rules:
 When time_range is "custom", also include these optional keys inside parameters:
 - start_date: ISO date string YYYY-MM-DD or null
 - end_date: ISO date string YYYY-MM-DD or null
+
+User memory rules:
+- You MUST respect saved user memory when interpreting the message.
+- Memory affects how spending should be interpreted, filtered, or explained.
+- If memory conflicts with a literal query, prioritize memory rules in your classification parameters.
+- Do not invent memory that is not listed below.
+
+{$memorySection}
 
 Examples:
 
@@ -132,5 +145,22 @@ User: "Hello!"
   }
 }
 PROMPT;
+    }
+
+    /**
+     * @param  array<int, string>  $memoryLines
+     */
+    private function formatMemorySection(array $memoryLines): string
+    {
+        if ($memoryLines === []) {
+            return "User Memory Context:\n- None saved yet.";
+        }
+
+        $lines = array_map(
+            fn (string $line) => '- '.$line,
+            $memoryLines
+        );
+
+        return "User Memory Context:\n".implode("\n", $lines);
     }
 }

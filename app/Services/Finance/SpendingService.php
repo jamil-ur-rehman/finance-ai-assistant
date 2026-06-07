@@ -79,7 +79,7 @@ class SpendingService
     }
 
     /**
-     * @param  array{category?: string|null, start_date?: string|\DateTimeInterface|null, end_date?: string|\DateTimeInterface|null}  $filters
+     * @param  array{category?: string|null, start_date?: string|\DateTimeInterface|null, end_date?: string|\DateTimeInterface|null, exclude_categories?: array<int, string>, exclude_merchants?: array<int, string>}  $filters
      */
     private function baseQuery(int $userId, array $filters): Builder
     {
@@ -88,6 +88,21 @@ class SpendingService
 
         if (! empty($filters['category'])) {
             $query->where('category', $filters['category']);
+        }
+
+        if (! empty($filters['exclude_categories'])) {
+            $excluded = array_map('strtolower', $filters['exclude_categories']);
+
+            $query->where(function (Builder $builder) use ($excluded) {
+                $builder->whereNull('category')
+                    ->orWhereRaw('LOWER(category) NOT IN ('.implode(',', array_fill(0, count($excluded), '?')).')', $excluded);
+            });
+        }
+
+        if (! empty($filters['exclude_merchants'])) {
+            foreach ($filters['exclude_merchants'] as $merchant) {
+                $query->whereRaw('LOWER(COALESCE(merchant, \'\')) NOT LIKE ?', ['%'.strtolower($merchant).'%']);
+            }
         }
 
         if (! empty($filters['start_date'])) {

@@ -4,9 +4,9 @@ namespace App\Services\AI;
 
 use App\Contracts\Ai\LlmClientInterface;
 use App\Models\User;
-use App\Models\UserMemory;
 use App\Services\Finance\BudgetService;
 use App\Services\Finance\InsightService;
+use App\Services\Finance\MemoryService;
 use App\Services\Finance\SpendingService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -25,6 +25,7 @@ class AiRouterService
         private readonly LlmClientInterface $llmClient,
         private readonly PromptBuilderService $promptBuilder,
         private readonly ResponseFormatterService $responseFormatter,
+        private readonly MemoryService $memoryService,
         private readonly SpendingService $spendingService,
         private readonly InsightService $insightService,
         private readonly BudgetService $budgetService,
@@ -46,6 +47,21 @@ class AiRouterService
      */
     public function handle(User $user, string $message): array
     {
+        if ($this->memoryService->shouldStoreFromMessage($message)) {
+            $stored = $this->memoryService->extractAndStore($user->id, $message);
+
+            if ($stored !== null) {
+                return [
+                    'success' => true,
+                    'data' => [
+                        'intent' => 'memory_update',
+                        'result' => $stored,
+                        'message' => $this->memoryService->confirmationMessage($stored),
+                    ],
+                ];
+            }
+        }
+
         $routed = $this->route($user, $message);
 
         if (! $routed['success']) {
@@ -62,7 +78,7 @@ class AiRouterService
             $routed['intent'],
             $result,
             $insights,
-            $this->buildContext($user)
+            $this->memoryService->buildContext($user->id)
         );
 
         $data = [
@@ -101,8 +117,10 @@ class AiRouterService
      */
     public function route(User $user, string $message): array
     {
+        $memoryContext = $this->memoryService->buildContext($user->id);
+
         try {
-            $classification = $this->classifyIntent($message);
+            $classification = $this->classifyIntent($message, $user->id);
         } catch (Throwable $exception) {
             Log::warning('AI intent classification failed', [
                 'user_id' => $user->id,
@@ -129,15 +147,20 @@ class AiRouterService
             );
         }
 
+        $spendingFilters = array_merge(
+            $this->resolveSpendingFilters($parameters),
+            $this->memoryService->spendingFiltersFromContext($memoryContext)
+        );
+
         $result = match ($intent) {
             'spending_query' => $this->spendingService->getAnalytics(
                 $user->id,
-                $this->resolveSpendingFilters($parameters)
+                $spendingFilters
             ),
             'insight_query' => $this->insightService->generateInsights($user->id),
             'budget_query' => $this->budgetService->getBudgetOverview(
                 $user->id,
-                $this->resolveSpendingFilters($parameters)
+                $spendingFilters
             ),
             default => null,
         };
@@ -155,10 +178,12 @@ class AiRouterService
     /**
      * @return array{intent: string, confidence: float, parameters: array<string, mixed>}
      */
-    private function classifyIntent(string $message): array
+    private function classifyIntent(string $message, int $userId): array
     {
         $rawResponse = $this->llmClient->chat(
-            $this->promptBuilder->buildIntentClassificationPrompt(),
+            $this->promptBuilder->buildIntentClassificationPrompt(
+                $this->memoryService->formatForPrompt($userId)
+            ),
             $message
         );
 
@@ -313,24 +338,5 @@ class AiRouterService
             'result' => null,
             'message' => $message ?? 'I could not process that request. Please try again with a clearer question.',
         ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function buildContext(User $user): array
-    {
-        $memories = UserMemory::query()
-            ->where('user_id', $user->id)
-            ->pluck('value', 'key');
-
-        $context = [];
-
-        foreach ($memories as $key => $value) {
-            $decoded = json_decode((string) $value, true);
-            $context[(string) $key] = json_last_error() === JSON_ERROR_NONE ? $decoded : $value;
-        }
-
-        return $context;
     }
 }
