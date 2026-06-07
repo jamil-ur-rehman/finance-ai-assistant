@@ -32,13 +32,29 @@ class ResponseFormatterService
         $totalSpend = (float) ($data['total_spend'] ?? 0);
         $byCategory = $this->filterIgnoredCategories($data['by_category'] ?? [], $context);
         $byMonth = $data['by_month'] ?? [];
+        $requestedCategory = is_string($context['query']['category'] ?? null)
+            ? $context['query']['category']
+            : null;
+        $focusedCategory = count($byCategory) === 1
+            ? array_key_first($byCategory)
+            : $requestedCategory;
 
         $lines = [];
-        $lines[] = sprintf('You spent %s overall in this period.', $this->formatMoney($totalSpend));
+
+        if ($focusedCategory !== null) {
+            $categoryAmount = (float) ($byCategory[$focusedCategory] ?? $totalSpend);
+            $lines[] = sprintf(
+                'You spent %s on %s in this period.',
+                $this->formatMoney($categoryAmount),
+                $this->formatLabel($focusedCategory)
+            );
+        } else {
+            $lines[] = sprintf('You spent %s overall in this period.', $this->formatMoney($totalSpend));
+        }
 
         $topCategory = $this->topCategory($byCategory);
 
-        if ($topCategory !== null) {
+        if ($topCategory !== null && $focusedCategory === null) {
             $lines[] = sprintf(
                 'Your top category was %s at %s.',
                 $this->formatLabel($topCategory['name']),
@@ -56,7 +72,12 @@ class ResponseFormatterService
             $lines[] = $trend;
         }
 
-        if ($totalSpend === 0.0) {
+        if ($totalSpend === 0.0 && $focusedCategory !== null) {
+            $lines = [sprintf(
+                'I did not find any spending on %s in this period.',
+                $this->formatLabel($focusedCategory)
+            )];
+        } elseif ($totalSpend === 0.0) {
             $lines = ['I did not find any spending in this period.'];
         }
 
