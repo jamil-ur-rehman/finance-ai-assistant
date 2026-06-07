@@ -16,6 +16,10 @@ class ResponseFormatterService
             'spending_query' => $this->formatSpending($data, $context),
             'insight_query' => $this->formatInsights($data, $insights, $context),
             'budget_query' => $this->formatBudget($data, $context),
+            'receipt_query' => $this->formatReceipt($data),
+            'merchant_lookup' => $this->formatMerchantLookup($data),
+            'financial_summary' => $this->formatFinancialSummary($data),
+            'suggestion_query' => $this->formatSuggestionQuery($data),
             default => [
                 'message' => 'I processed your request, but I do not have a formatted summary for this type yet.',
             ],
@@ -111,29 +115,64 @@ class ResponseFormatterService
         $payload = array_merge($data, $insights);
         $lines = [];
         $suggestions = [];
+        $queryType = is_string($context['query']['query_type'] ?? null)
+            ? $context['query']['query_type']
+            : null;
 
         $anomalies = $payload['anomalies'] ?? [];
-
-        foreach ($anomalies as $anomaly) {
-            $lines[] = $this->formatAnomalyLine($anomaly);
-        }
-
         $subscriptions = $payload['subscriptions'] ?? [];
-
-        foreach ($subscriptions as $subscription) {
-            $lines[] = $this->formatSubscriptionLine($subscription);
-        }
-
         $comparisons = $payload['comparisons'] ?? [];
-
-        foreach ($comparisons as $comparison) {
-            $lines[] = $this->formatComparisonLine($comparison);
-        }
-
+        $categorySpikes = $payload['category_spikes'] ?? [];
         $genericInsights = $payload['insights'] ?? [];
 
-        foreach ($genericInsights as $insight) {
-            $lines[] = is_string($insight) ? $insight : ($insight['message'] ?? null);
+        if (in_array($queryType, ['comparison', 'anomaly'], true)) {
+            foreach ($genericInsights as $insight) {
+                $lines[] = is_string($insight) ? $insight : ($insight['message'] ?? null);
+            }
+
+            foreach ($comparisons as $comparison) {
+                if (($comparison['label'] ?? '') === 'Overall spending') {
+                    continue;
+                }
+
+                $lines[] = $this->formatComparisonLine($comparison);
+            }
+
+            if ($queryType === 'anomaly') {
+                foreach ($anomalies as $anomaly) {
+                    $lines[] = $this->formatAnomalyLine($anomaly);
+                }
+            }
+        } else {
+            foreach ($anomalies as $anomaly) {
+                $lines[] = $this->formatAnomalyLine($anomaly);
+            }
+
+            foreach ($subscriptions as $subscription) {
+                $lines[] = $this->formatSubscriptionLine($subscription);
+            }
+
+            foreach ($comparisons as $comparison) {
+                $lines[] = $this->formatComparisonLine($comparison);
+            }
+
+            foreach ($genericInsights as $insight) {
+                $lines[] = is_string($insight) ? $insight : ($insight['message'] ?? null);
+            }
+
+            foreach ($categorySpikes as $spike) {
+                if (! is_array($spike)) {
+                    continue;
+                }
+
+                $lines[] = sprintf(
+                    'Spending spike in %s: up %s vs last month ($%s vs $%s).',
+                    $this->formatLabel((string) ($spike['category'] ?? 'category')),
+                    $this->formatPercent((float) ($spike['change_percent'] ?? 0)),
+                    number_format((float) ($spike['current_amount'] ?? 0), 2),
+                    number_format((float) ($spike['previous_amount'] ?? 0), 2)
+                );
+            }
         }
 
         $lines = array_values(array_filter($lines, fn ($line) => is_string($line) && $line !== ''));
@@ -155,8 +194,128 @@ class ResponseFormatterService
                 'anomalies' => $anomalies,
                 'subscriptions' => $subscriptions,
                 'comparisons' => $comparisons,
+                'category_spikes' => $categorySpikes,
             ],
             'suggestions' => array_values(array_unique($suggestions)),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array{message: string, breakdown?: array<string, mixed>}
+     */
+    private function formatReceipt(array $data): array
+    {
+        if (($data['error'] ?? null) === 'missing_receipt_text') {
+            return [
+                'message' => (string) ($data['message'] ?? 'Please include receipt text to process.'),
+            ];
+        }
+
+        $parsed = is_array($data['parsed'] ?? null) ? $data['parsed'] : [];
+
+        return [
+            'message' => sprintf(
+                'Receipt added: %s for %s on %s (category: %s).',
+                $parsed['merchant'] ?? 'Unknown merchant',
+                $this->formatMoney((float) ($parsed['amount'] ?? 0)),
+                $parsed['date'] ?? 'today',
+                $this->formatLabel((string) ($parsed['category'] ?? 'uncategorized'))
+            ),
+            'breakdown' => [
+                'parsed' => $parsed,
+                'transaction_id' => $data['transaction']['id'] ?? null,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array{message: string, breakdown: array<string, mixed>}
+     */
+    private function formatMerchantLookup(array $data): array
+    {
+        $confidence = (float) ($data['confidence'] ?? 0);
+
+        return [
+            'message' => sprintf(
+                "%s likely refers to %s. %s\nSuggested category: %s (confidence: %s).",
+                $data['descriptor'] ?? 'This charge',
+                $data['likely_merchant'] ?? 'an unknown merchant',
+                $data['explanation'] ?? '',
+                $this->formatLabel((string) ($data['category'] ?? 'unknown')),
+                $this->formatPercent($confidence * 100)
+            ),
+            'breakdown' => [
+                'descriptor' => $data['descriptor'] ?? null,
+                'likely_merchant' => $data['likely_merchant'] ?? null,
+                'category' => $data['category'] ?? null,
+                'confidence' => $confidence,
+                'source' => $data['source'] ?? 'keyword_map',
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array{message: string, breakdown: array<string, mixed>, suggestions: array<int, string>}
+     */
+    private function formatFinancialSummary(array $data): array
+    {
+        $topCategories = $data['top_categories'] ?? [];
+        $lines = [(string) ($data['summary'] ?? 'Here is your financial summary for this month.')];
+
+        $suggestions = [];
+
+        if (($data['subscription_count'] ?? 0) > 0) {
+            $suggestions[] = 'Review recurring subscriptions for services you no longer use.';
+        }
+
+        if (($data['unusual_spikes'] ?? []) !== []) {
+            $suggestions[] = 'Investigate categories with unusual spikes before month end.';
+        }
+
+        if ($suggestions === []) {
+            $suggestions[] = 'Keep tracking weekly to stay ahead of budget surprises.';
+        }
+
+        return [
+            'message' => $this->joinLines($lines),
+            'breakdown' => [
+                'total_spending_this_month' => $this->formatMoney((float) ($data['total_spending_this_month'] ?? 0)),
+                'top_categories' => $topCategories,
+                'unusual_spikes' => $data['unusual_spikes'] ?? [],
+                'subscription_count' => $data['subscription_count'] ?? 0,
+                'period' => $data['period'] ?? [],
+            ],
+            'suggestions' => $suggestions,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array{message: string, breakdown: array<string, mixed>, suggestions: array<int, string>}
+     */
+    private function formatSuggestionQuery(array $data): array
+    {
+        $suggestions = $data['suggestions'] ?? [];
+        $lines = ['Here are practical ways to reduce spending this month:'];
+
+        foreach ($suggestions as $index => $suggestion) {
+            $lines[] = sprintf('%d. %s', $index + 1, $suggestion);
+        }
+
+        if ($suggestions === []) {
+            $lines = ['I need more spending data this month before I can suggest specific cuts.'];
+        }
+
+        return [
+            'message' => $this->joinLines($lines),
+            'breakdown' => [
+                'total_spend' => $this->formatMoney((float) ($data['total_spend'] ?? 0)),
+                'top_categories' => $data['top_categories'] ?? [],
+            ],
+            'suggestions' => $suggestions,
         ];
     }
 

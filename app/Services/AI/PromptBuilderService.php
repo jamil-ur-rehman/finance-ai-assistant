@@ -23,27 +23,35 @@ Return ONLY valid JSON. No markdown, no code fences, no explanation, no extra ke
 
 Required JSON schema:
 {
-  "intent": "spending_query | insight_query | budget_query | unknown",
+  "intent": "spending_query | insight_query | budget_query | receipt_query | merchant_lookup | financial_summary | suggestion_query | unknown",
   "confidence": 0.0,
   "parameters": {
     "category": null,
-    "time_range": "last_month | last_7_days | custom | null",
+    "time_range": "last_month | last_7_days | this_month | custom | null",
     "merchant": null,
-    "query_type": null
+    "query_type": null,
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 
 Intent definitions:
 - spending_query: Questions about how much was spent, totals, breakdowns by category or time period.
-- insight_query: Questions about trends, anomalies, subscriptions, comparisons, or financial patterns.
+- insight_query: Questions about trends, anomalies, subscriptions, comparisons, unusual spending, or whether spending is higher than usual.
 - budget_query: Questions about budget limits, remaining budget, or whether the user is over budget.
+- receipt_query: User wants to add, upload, scan, or process a receipt (OCR text included or implied).
+- merchant_lookup: User asks what an unknown charge descriptor means (e.g. "what is STRIPE XYZ", "what is this Uber charge").
+- financial_summary: User asks for a summary or overview of their finances (e.g. "summarize my finances").
+- suggestion_query: User asks for recommendations on reducing spending or cutting expenses.
 - unknown: Greetings, unrelated questions, or messages that cannot be routed safely.
 
 Parameter rules:
 - category: Spending or budget category slug when explicitly mentioned (e.g. "food", "travel"). Otherwise null.
-- time_range: Use "last_month" for previous calendar month, "last_7_days" for the past week, "custom" when a specific date range is mentioned, otherwise null.
+- time_range: Use "last_month" for previous calendar month, "last_7_days" for the past week, "this_month" for current calendar month, "custom" when a specific date range is mentioned, otherwise null.
 - merchant: Merchant name when mentioned (e.g. "Amazon", "Netflix"). Otherwise null.
 - query_type: Optional sub-type such as "total", "by_category", "by_month", "anomaly", "subscription", "comparison", "budget_status". Otherwise null.
+- receipt_text: Raw receipt or OCR text when the user is adding a receipt. Otherwise null.
+- charge_descriptor: The bank/card descriptor to identify when user asks "what is X". Otherwise null.
 
 When time_range is "custom", also include these optional keys inside parameters:
 - start_date: ISO date string YYYY-MM-DD or null
@@ -67,33 +75,79 @@ User: "How much did I spend on food last month?"
     "category": "food",
     "time_range": "last_month",
     "merchant": null,
-    "query_type": "by_category"
+    "query_type": "by_category",
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 
-User: "What were my biggest expenses this week?"
+User: "Summarize my finances"
 {
-  "intent": "spending_query",
+  "intent": "financial_summary",
+  "confidence": 0.96,
+  "parameters": {
+    "category": null,
+    "time_range": "this_month",
+    "merchant": null,
+    "query_type": null,
+    "receipt_text": null,
+    "charge_descriptor": null
+  }
+}
+
+User: "What is STRIPE XYZ on my statement?"
+{
+  "intent": "merchant_lookup",
+  "confidence": 0.95,
+  "parameters": {
+    "category": null,
+    "time_range": null,
+    "merchant": null,
+    "query_type": null,
+    "receipt_text": null,
+    "charge_descriptor": "STRIPE XYZ"
+  }
+}
+
+User: "Add this receipt: Starbucks\\nTotal: \$12.45\\nDate: 2026-06-01"
+{
+  "intent": "receipt_query",
+  "confidence": 0.94,
+  "parameters": {
+    "category": null,
+    "time_range": null,
+    "merchant": null,
+    "query_type": null,
+    "receipt_text": "Starbucks\\nTotal: \$12.45\\nDate: 2026-06-01",
+    "charge_descriptor": null
+  }
+}
+
+User: "Suggest where I can cut expenses"
+{
+  "intent": "suggestion_query",
   "confidence": 0.93,
   "parameters": {
     "category": null,
-    "time_range": "last_7_days",
+    "time_range": "this_month",
     "merchant": null,
-    "query_type": "total"
+    "query_type": null,
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 
-User: "Show spending from January to March"
+User: "Am I spending more than usual?"
 {
-  "intent": "spending_query",
-  "confidence": 0.91,
+  "intent": "insight_query",
+  "confidence": 0.92,
   "parameters": {
     "category": null,
-    "time_range": "custom",
+    "time_range": "this_month",
     "merchant": null,
-    "query_type": "total",
-    "start_date": "2026-01-01",
-    "end_date": "2026-03-31"
+    "query_type": "comparison",
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 
@@ -105,19 +159,9 @@ User: "Do I have any unusual transactions?"
     "category": null,
     "time_range": null,
     "merchant": null,
-    "query_type": "anomaly"
-  }
-}
-
-User: "What subscriptions am I paying for?"
-{
-  "intent": "insight_query",
-  "confidence": 0.96,
-  "parameters": {
-    "category": null,
-    "time_range": null,
-    "merchant": null,
-    "query_type": "subscription"
+    "query_type": "anomaly",
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 
@@ -127,9 +171,11 @@ User: "Am I over my food budget this month?"
   "confidence": 0.94,
   "parameters": {
     "category": "food",
-    "time_range": "last_month",
+    "time_range": "this_month",
     "merchant": null,
-    "query_type": "budget_status"
+    "query_type": "budget_status",
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 
@@ -141,7 +187,9 @@ User: "Hello!"
     "category": null,
     "time_range": null,
     "merchant": null,
-    "query_type": null
+    "query_type": null,
+    "receipt_text": null,
+    "charge_descriptor": null
   }
 }
 PROMPT;

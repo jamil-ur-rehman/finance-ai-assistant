@@ -6,9 +6,13 @@ use App\Contracts\Ai\LlmClientInterface;
 use App\Models\Budget;
 use App\Models\User;
 use App\Services\Finance\BudgetService;
+use App\Services\Finance\FinancialSummaryService;
 use App\Services\Finance\InsightService;
 use App\Services\Finance\MemoryService;
+use App\Services\Finance\MerchantLookupService;
+use App\Services\Finance\ReceiptService;
 use App\Services\Finance\SpendingService;
+use App\Services\Finance\SuggestionService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -19,6 +23,10 @@ class AiRouterService
         'spending_query',
         'insight_query',
         'budget_query',
+        'receipt_query',
+        'merchant_lookup',
+        'financial_summary',
+        'suggestion_query',
         'unknown',
     ];
 
@@ -31,6 +39,10 @@ class AiRouterService
         private readonly SpendingService $spendingService,
         private readonly InsightService $insightService,
         private readonly BudgetService $budgetService,
+        private readonly ReceiptService $receiptService,
+        private readonly MerchantLookupService $merchantLookupService,
+        private readonly FinancialSummaryService $financialSummaryService,
+        private readonly SuggestionService $suggestionService,
     ) {}
 
     /**
@@ -154,7 +166,7 @@ class AiRouterService
                 intent: 'unknown',
                 confidence: $confidence,
                 parameters: $parameters,
-                message: 'I am not sure what you are asking. I can help with spending totals, financial insights, and budget questions.'
+                message: 'I am not sure what you are asking. I can help with spending totals, financial summaries, merchant lookups, receipts, savings suggestions, and budget questions.'
             );
         }
 
@@ -168,10 +180,29 @@ class AiRouterService
                 $user->id,
                 $spendingFilters
             ),
-            'insight_query' => $this->insightService->generateInsights($user->id),
+            'insight_query' => $this->insightService->generateInsights(
+                $user->id,
+                $this->memoryService->spendingFiltersFromContext($memoryContext)
+            ),
             'budget_query' => $this->budgetService->getBudgetOverview(
                 $user->id,
                 $spendingFilters
+            ),
+            'receipt_query' => $this->processReceiptFromMessage(
+                $user->id,
+                $message,
+                $parameters
+            ),
+            'merchant_lookup' => $this->merchantLookupService->lookup(
+                $this->resolveChargeDescriptor($message, $parameters)
+            ),
+            'financial_summary' => $this->financialSummaryService->generateSummary(
+                $user->id,
+                $this->memoryService->spendingFiltersFromContext($memoryContext)
+            ),
+            'suggestion_query' => $this->suggestionService->generateSuggestions(
+                $user->id,
+                $this->memoryService->spendingFiltersFromContext($memoryContext)
             ),
             default => null,
         };
@@ -343,6 +374,8 @@ class AiRouterService
             'time_range' => $this->nullableString($parameters['time_range'] ?? null),
             'merchant' => $this->nullableString($parameters['merchant'] ?? null),
             'query_type' => $this->nullableString($parameters['query_type'] ?? null),
+            'receipt_text' => $this->nullableString($parameters['receipt_text'] ?? null),
+            'charge_descriptor' => $this->nullableString($parameters['charge_descriptor'] ?? null),
         ]);
 
         if (array_key_exists('start_date', $parameters)) {
@@ -366,7 +399,74 @@ class AiRouterService
             'time_range' => null,
             'merchant' => null,
             'query_type' => null,
+            'receipt_text' => null,
+            'charge_descriptor' => null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $parameters
+     * @return array<string, mixed>
+     */
+    private function processReceiptFromMessage(int $userId, string $message, array $parameters): array
+    {
+        $text = $parameters['receipt_text'] ?? $this->extractReceiptText($message);
+
+        if ($text === null || trim($text) === '') {
+            return [
+                'error' => 'missing_receipt_text',
+                'message' => 'Paste the receipt text after "add receipt" so I can parse merchant, amount, and date.',
+            ];
+        }
+
+        $processed = $this->receiptService->processReceipt($userId, $text);
+
+        return [
+            'transaction' => $processed['transaction']->toArray(),
+            'parsed' => $processed['parsed'],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $parameters
+     */
+    private function resolveChargeDescriptor(string $message, array $parameters): string
+    {
+        if (! empty($parameters['charge_descriptor'])) {
+            return (string) $parameters['charge_descriptor'];
+        }
+
+        if (! empty($parameters['merchant'])) {
+            return (string) $parameters['merchant'];
+        }
+
+        return $this->extractChargeDescriptor($message) ?? trim($message);
+    }
+
+    private function extractReceiptText(string $message): ?string
+    {
+        if (preg_match('/\b(?:add|upload|scan|process)\s+(?:this\s+)?receipt\s*[:\-]?\s*(.+)$/is', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        if (preg_match('/\breceipt\s*[:\-]\s*(.+)$/is', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return null;
+    }
+
+    private function extractChargeDescriptor(string $message): ?string
+    {
+        if (preg_match('/\bwhat is(?: this)?\s+(.+?)(?:\s+charge)?[?.!]*$/i', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        if (preg_match('/\b(?:explain|identify)\s+(?:this\s+)?(?:charge|transaction|payment)\s*[:\-]?\s*(.+)$/i', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return null;
     }
 
     /**

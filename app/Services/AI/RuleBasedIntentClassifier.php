@@ -16,14 +16,18 @@ class RuleBasedIntentClassifier
             'time_range' => null,
             'merchant' => null,
             'query_type' => null,
+            'receipt_text' => null,
+            'charge_descriptor' => null,
         ];
 
         $parameters['category'] = $this->extractCategory($normalized);
         $parameters['time_range'] = $this->extractTimeRange($normalized);
         $parameters['merchant'] = $this->extractMerchant($normalized);
+        $parameters['receipt_text'] = $this->extractReceiptText($message);
+        $parameters['charge_descriptor'] = $this->extractChargeDescriptor($message);
         $parameters['query_type'] = $this->extractQueryType($normalized, $parameters);
 
-        $intent = $this->detectIntent($normalized);
+        $intent = $this->detectIntent($normalized, $message);
 
         return [
             'intent' => $intent,
@@ -32,10 +36,32 @@ class RuleBasedIntentClassifier
         ];
     }
 
-    private function detectIntent(string $message): string
+    private function detectIntent(string $message, string $rawMessage = ''): string
     {
         if (preg_match('/\b(budget will be|set my budget|next budget)\b/', $message)) {
             return 'unknown';
+        }
+
+        if (preg_match('/\b(add|upload|scan|process)\s+(?:this\s+)?receipt\b/', $message)
+            || preg_match('/\breceipt\s*[:\-]/', $message)) {
+            return 'receipt_query';
+        }
+
+        if (preg_match('/\bwhat is\b/', $message)
+            || preg_match('/\b(explain|identify)\s+(?:this\s+)?(?:charge|transaction|payment)\b/', $message)) {
+            return 'merchant_lookup';
+        }
+
+        if (preg_match('/\b(summarize|summary|overview|financial summary|how am i doing|give me a summary)\b/', $message)) {
+            return 'financial_summary';
+        }
+
+        if (preg_match('/\b(suggest|recommend|cut expense|reduce spending|save money|where can i cut|ways to save)\b/', $message)) {
+            return 'suggestion_query';
+        }
+
+        if (preg_match('/\b(more than usual|spending more|higher than normal|higher than usual|am i spending more)\b/', $message)) {
+            return 'insight_query';
         }
 
         if (preg_match('/\b(budget|over budget|under budget|budget limit|remaining budget)\b/', $message)) {
@@ -98,12 +124,38 @@ class RuleBasedIntentClassifier
 
     private function extractMerchant(string $message): ?string
     {
-        $merchants = ['uber', 'netflix', 'spotify', 'amazon', 'mcdonalds', 'kfc', 'careem'];
+        $merchants = ['uber', 'netflix', 'spotify', 'amazon', 'mcdonalds', 'kfc', 'careem', 'stripe'];
 
         foreach ($merchants as $merchant) {
             if (str_contains($message, $merchant)) {
                 return $merchant;
             }
+        }
+
+        return null;
+    }
+
+    private function extractReceiptText(string $message): ?string
+    {
+        if (preg_match('/\b(?:add|upload|scan|process)\s+(?:this\s+)?receipt\s*[:\-]?\s*(.+)$/is', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        if (preg_match('/\breceipt\s*[:\-]\s*(.+)$/is', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return null;
+    }
+
+    private function extractChargeDescriptor(string $message): ?string
+    {
+        if (preg_match('/\bwhat is(?: this)?\s+(.+?)(?:\s+charge)?[?.!]*$/i', $message, $matches)) {
+            return trim($matches[1]);
+        }
+
+        if (preg_match('/\b(?:explain|identify)\s+(?:this\s+)?(?:charge|transaction|payment)\s*[:\-]?\s*(.+)$/i', $message, $matches)) {
+            return trim($matches[1]);
         }
 
         return null;
@@ -124,6 +176,10 @@ class RuleBasedIntentClassifier
 
         if (preg_match('/\b(unusual|anomaly|anomalies)\b/', $message)) {
             return 'anomaly';
+        }
+
+        if (preg_match('/\b(more than usual|spending more|higher than usual)\b/', $message)) {
+            return 'comparison';
         }
 
         if (preg_match('/\b(compare|comparison|vs|versus)\b/', $message)) {
