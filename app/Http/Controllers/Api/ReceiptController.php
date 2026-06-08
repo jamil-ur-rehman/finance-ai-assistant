@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\AI\ChatResponseBuilder;
 use App\Services\Finance\ReceiptOcrService;
 use App\Services\Finance\ReceiptService;
 use Illuminate\Http\JsonResponse;
@@ -16,6 +17,7 @@ class ReceiptController extends Controller
     public function __construct(
         private readonly ReceiptService $receiptService,
         private readonly ReceiptOcrService $receiptOcrService,
+        private readonly ChatResponseBuilder $responseBuilder,
     ) {}
 
     public function store(Request $request): JsonResponse
@@ -35,10 +37,10 @@ class ReceiptController extends Controller
             $user = auth()->user();
 
             if ($user === null) {
-                return response()->json([
-                    'success' => false,
-                    'error' => 'Unauthenticated.',
-                ], 401);
+                return response()->json(
+                    $this->responseBuilder->error('Unauthenticated.'),
+                    401
+                );
             }
 
             $ocrSource = null;
@@ -53,10 +55,10 @@ class ReceiptController extends Controller
             }
 
             if ($text === '' && empty($validated['amount'])) {
-                return response()->json([
-                    'success' => false,
-                    'error' => 'Upload a receipt photo or provide receipt text.',
-                ], 422);
+                return response()->json(
+                    $this->responseBuilder->error('Upload a receipt photo or provide receipt text.'),
+                    422
+                );
             }
 
             if ($text === '') {
@@ -89,24 +91,24 @@ class ReceiptController extends Controller
                 default => null,
             };
 
-            return response()->json([
-                'success' => true,
-                'data' => [
+            $message = trim(implode("\n", array_filter([
+                sprintf(
+                    'Receipt added: %s for $%s in %s.',
+                    $result['parsed']['merchant'] ?? 'Unknown merchant',
+                    number_format((float) $result['parsed']['amount'], 2),
+                    $result['parsed']['category']
+                ),
+                $ocrNote,
+            ])));
+
+            return response()->json(
+                $this->responseBuilder->success('spending', $message, [
                     'transaction' => $result['transaction'],
                     'parsed' => $result['parsed'],
                     'extracted_text' => $text,
                     'ocr_source' => $ocrSource,
-                    'message' => trim(implode("\n", array_filter([
-                        sprintf(
-                            'Receipt added: %s for $%s in %s.',
-                            $result['parsed']['merchant'] ?? 'Unknown merchant',
-                            number_format((float) $result['parsed']['amount'], 2),
-                            $result['parsed']['category']
-                        ),
-                        $ocrNote,
-                    ]))),
-                ],
-            ]);
+                ])
+            );
         } catch (ValidationException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
@@ -115,10 +117,10 @@ class ReceiptController extends Controller
                 'error' => $exception->getMessage(),
             ]);
 
-            return response()->json([
-                'success' => false,
-                'error' => 'Something went wrong while processing the receipt. Please try again.',
-            ], 500);
+            return response()->json(
+                $this->responseBuilder->error('Something went wrong while processing the receipt. Please try again.'),
+                500
+            );
         }
     }
 }

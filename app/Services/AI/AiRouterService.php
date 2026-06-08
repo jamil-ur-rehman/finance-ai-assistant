@@ -43,6 +43,7 @@ class AiRouterService
         private readonly MerchantLookupService $merchantLookupService,
         private readonly FinancialSummaryService $financialSummaryService,
         private readonly SuggestionService $suggestionService,
+        private readonly ChatResponseBuilder $responseBuilder,
     ) {}
 
     /**
@@ -61,71 +62,71 @@ class AiRouterService
      */
     public function handle(User $user, string $message): array
     {
-        $budgetPlan = $this->tryStoreBudgetPlan($user, $message);
+        try {
+            $budgetPlan = $this->tryStoreBudgetPlan($user, $message);
 
-        if ($budgetPlan !== null) {
-            return $budgetPlan;
-        }
-
-        if ($this->memoryService->shouldStoreFromMessage($message)) {
-            $stored = $this->memoryService->extractAndStore($user->id, $message);
-
-            if ($stored !== null) {
-                return [
-                    'success' => true,
-                    'data' => [
-                        'intent' => 'memory_update',
-                        'result' => $stored,
-                        'message' => $this->memoryService->confirmationMessage($stored),
-                    ],
-                ];
+            if ($budgetPlan !== null) {
+                return $budgetPlan;
             }
-        }
 
-        $routed = $this->route($user, $message);
+            if ($this->memoryService->shouldStoreFromMessage($message)) {
+                $stored = $this->memoryService->extractAndStore($user->id, $message);
 
-        if (! $routed['success']) {
-            return [
-                'success' => false,
-                'error' => $routed['message'] ?? 'I could not process that request. Please try again with a clearer question.',
-            ];
-        }
+                if ($stored !== null) {
+                    return $this->responseBuilder->success(
+                        'memory',
+                        $this->memoryService->confirmationMessage($stored),
+                        ['result' => $stored, 'intent' => 'memory_update']
+                    );
+                }
+            }
 
-        $result = is_array($routed['result']) ? $routed['result'] : [];
-        $insights = $routed['intent'] === 'insight_query' ? $result : [];
+            $routed = $this->route($user, $message);
 
-        $formatted = $this->responseFormatter->format(
-            $routed['intent'],
-            $result,
-            $insights,
-            array_merge(
+            if ($routed['intent'] === 'unknown') {
+                return $this->responseBuilder->unknown();
+            }
+
+            if (! $routed['success']) {
+                return $this->responseBuilder->error(
+                    $routed['message'] ?? 'I could not process that request. Please try again with a clearer question.'
+                );
+            }
+
+            $result = is_array($routed['result']) ? $routed['result'] : [];
+            $insights = $routed['intent'] === 'insight_query' ? $result : [];
+            $memoryContext = array_merge(
                 $this->memoryService->buildContext($user->id),
                 ['query' => $routed['parameters'] ?? []]
-            )
-        );
+            );
 
-        $data = [
-            'intent' => $routed['intent'],
-            'result' => $routed['result'],
-            'message' => $formatted['message'],
-        ];
+            $formatted = $this->responseFormatter->format(
+                $routed['intent'],
+                $result,
+                $insights,
+                $memoryContext
+            );
 
-        if (isset($formatted['breakdown'])) {
-            $data['breakdown'] = $formatted['breakdown'];
+            return $this->responseBuilder->success(
+                ChatResponseBuilder::intentToType($routed['intent']),
+                $formatted['message'],
+                $this->responseBuilder->buildDataPayload(
+                    $routed['intent'],
+                    $routed['result'],
+                    $formatted,
+                    ['memory_applied' => $this->memoryAppliedNotes($memoryContext)]
+                )
+            );
+        } catch (Throwable $exception) {
+            Log::error('AI router handle failure', [
+                'user_id' => $user->id,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return $this->responseBuilder->error(
+                'Something went wrong while processing your request. Please try again.'
+            );
         }
-
-        if (! empty($formatted['suggestions'])) {
-            $data['suggestions'] = $formatted['suggestions'];
-        }
-
-        if ($routed['intent'] === 'insight_query') {
-            $data['insights'] = $result;
-        }
-
-        return [
-            'success' => true,
-            'data' => $data,
-        ];
     }
 
     /**
@@ -150,11 +151,20 @@ class AiRouterService
                 'error' => $exception->getMessage(),
             ]);
 
-            return $this->fallbackResponse(
-                intent: 'unknown',
-                confidence: 0.0,
-                message: $this->classificationFailureMessage($exception),
-            );
+            $keyword = $this->ruleBasedIntentClassifier->keywordFallback($message);
+
+            if ($keyword !== null) {
+                $classification = $keyword;
+            } else {
+                return [
+                    'success' => true,
+                    'intent' => 'unknown',
+                    'confidence' => 0.0,
+                    'parameters' => $this->defaultParameters(),
+                    'result' => null,
+                    'message' => null,
+                ];
+            }
         }
 
         $intent = $classification['intent'];
@@ -162,12 +172,22 @@ class AiRouterService
         $parameters = $classification['parameters'];
 
         if ($intent === 'unknown' || $confidence < 0.5) {
-            return $this->fallbackResponse(
-                intent: 'unknown',
-                confidence: $confidence,
-                parameters: $parameters,
-                message: 'I am not sure what you are asking. I can help with spending totals, financial summaries, merchant lookups, receipts, savings suggestions, and budget questions.'
-            );
+            $keyword = $this->ruleBasedIntentClassifier->keywordFallback($message);
+
+            if ($keyword !== null) {
+                $intent = $keyword['intent'];
+                $confidence = $keyword['confidence'];
+                $parameters = array_merge($parameters, $keyword['parameters']);
+            } else {
+                return [
+                    'success' => true,
+                    'intent' => 'unknown',
+                    'confidence' => $confidence,
+                    'parameters' => $parameters,
+                    'result' => null,
+                    'message' => null,
+                ];
+            }
         }
 
         $spendingFilters = array_merge(
@@ -236,7 +256,7 @@ class AiRouterService
                 $message
             );
 
-            return $this->parseClassification($rawResponse);
+            return $this->parseClassification($rawResponse, $message);
         } catch (Throwable $exception) {
             Log::warning('LLM intent classification failed, falling back to rule-based classifier.', [
                 'user_id' => $userId,
@@ -249,17 +269,14 @@ class AiRouterService
                 return $fallback;
             }
 
+            $keyword = $this->ruleBasedIntentClassifier->keywordFallback($message);
+
+            if ($keyword !== null) {
+                return $keyword;
+            }
+
             throw $exception;
         }
-    }
-
-    private function classificationFailureMessage(Throwable $exception): string
-    {
-        if (str_contains($exception->getMessage(), 'API key is not configured')) {
-            return 'The AI service is not configured. Add OPENAI_API_KEY to your .env file, or try a clearer question like "How much did I spend on food last month?"';
-        }
-
-        return 'I had trouble understanding your request. Could you rephrase it? For example: "How much did I spend on food last month?"';
     }
 
     /**
@@ -291,18 +308,21 @@ class AiRouterService
         return [
             'success' => true,
             'data' => [
-                'intent' => 'budget_update',
-                'result' => [
-                    'category' => $category,
-                    'month' => $month,
-                    'limit_amount' => $limitAmount,
-                ],
+                'type' => 'budget',
                 'message' => sprintf(
                     "Got it. I've set your %s budget for %s to $%s.",
                     str_replace('_', ' ', $category),
                     $month,
                     number_format($limitAmount, 2)
                 ),
+                'data' => [
+                    'intent' => 'budget_update',
+                    'result' => [
+                        'category' => $category,
+                        'month' => $month,
+                        'limit_amount' => $limitAmount,
+                    ],
+                ],
             ],
         ];
     }
@@ -324,12 +344,14 @@ class AiRouterService
     /**
      * @return array{intent: string, confidence: float, parameters: array<string, mixed>}
      */
-    private function parseClassification(string $rawResponse): array
+    private function parseClassification(string $rawResponse, string $message): array
     {
         $payload = json_decode($this->extractJson($rawResponse), true);
 
         if (! is_array($payload)) {
-            throw new \InvalidArgumentException('LLM response is not valid JSON.');
+            Log::warning('LLM intent response was not valid JSON, using rule-based fallback.');
+
+            return $this->ruleBasedIntentClassifier->classify($message);
         }
 
         $intent = $payload['intent'] ?? 'unknown';
@@ -505,6 +527,26 @@ class AiRouterService
         return $filters;
     }
 
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<int, string>
+     */
+    private function memoryAppliedNotes(array $context): array
+    {
+        $notes = [];
+        $ignored = $context['ignored_categories'] ?? [];
+
+        if (is_array($ignored) && $ignored !== []) {
+            foreach ($ignored as $category) {
+                if (is_string($category) && trim($category) !== '') {
+                    $notes[] = 'Ignoring '.str_replace('_', ' ', strtolower(trim($category))).' based on your saved preferences.';
+                }
+            }
+        }
+
+        return $notes;
+    }
+
     private function nullableString(mixed $value): ?string
     {
         if (! is_string($value)) {
@@ -514,32 +556,5 @@ class AiRouterService
         $trimmed = trim($value);
 
         return $trimmed === '' ? null : $trimmed;
-    }
-
-    /**
-     * @param  array<string, mixed>  $parameters
-     * @return array{
-     *     success: bool,
-     *     intent: string,
-     *     confidence: float,
-     *     parameters: array<string, mixed>,
-     *     result: null,
-     *     message: string
-     * }
-     */
-    private function fallbackResponse(
-        string $intent,
-        float $confidence,
-        ?string $message = null,
-        array $parameters = [],
-    ): array {
-        return [
-            'success' => false,
-            'intent' => $intent,
-            'confidence' => $confidence,
-            'parameters' => $parameters ?: $this->defaultParameters(),
-            'result' => null,
-            'message' => $message ?? 'I could not process that request. Please try again with a clearer question.',
-        ];
     }
 }

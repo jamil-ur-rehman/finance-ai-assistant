@@ -33,6 +33,14 @@ class SpendingService
     }
 
     /**
+     * @param  array{category?: string|null, start_date?: string|\DateTimeInterface|null, end_date?: string|\DateTimeInterface|null, exclude_categories?: array<int, string>, exclude_merchants?: array<int, string>}  $filters
+     */
+    public function countTransactions(int $userId, array $filters = []): int
+    {
+        return $this->baseQuery($userId, $filters)->count();
+    }
+
+    /**
      * @param  array{category?: string|null, start_date?: string|\DateTimeInterface|null, end_date?: string|\DateTimeInterface|null}  $filters
      * @return array<string, float>
      */

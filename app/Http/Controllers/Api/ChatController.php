@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\AI\AiRouterService;
+use App\Services\AI\ChatResponseBuilder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -14,6 +15,7 @@ class ChatController extends Controller
 {
     public function __construct(
         private readonly AiRouterService $aiRouter,
+        private readonly ChatResponseBuilder $responseBuilder,
     ) {}
 
     public function handle(Request $request): JsonResponse
@@ -26,23 +28,22 @@ class ChatController extends Controller
             $message = trim($validated['message']);
 
             if ($message === '') {
-                return response()->json([
-                    'success' => false,
-                    'error' => 'Message cannot be empty.',
-                ], 422);
+                return response()->json(
+                    $this->responseBuilder->error('Message cannot be empty.'),
+                    422
+                );
             }
 
             $user = auth()->user();
 
             if ($user === null) {
-                return response()->json([
-                    'success' => false,
-                    'error' => 'Unauthenticated.',
-                ], 401);
+                return response()->json(
+                    $this->responseBuilder->error('Unauthenticated.'),
+                    401
+                );
             }
 
             $response = $this->aiRouter->handle($user, $message);
-
             $status = ($response['success'] ?? false) ? 200 : 422;
 
             return response()->json($response, $status);
@@ -54,10 +55,10 @@ class ChatController extends Controller
                 'error' => $exception->getMessage(),
             ]);
 
-            return response()->json([
-                'success' => false,
-                'error' => 'Something went wrong while processing your message. Please try again.',
-            ], 500);
+            return response()->json(
+                $this->responseBuilder->error('Something went wrong while processing your message. Please try again.'),
+                500
+            );
         }
     }
 }

@@ -66,8 +66,10 @@ class ResponseFormatterService
             );
         }
 
-        if ($this->hasIgnoredCategories($context)) {
-            $lines[] = 'Totals exclude your saved category preferences.';
+        $memoryNote = $this->memoryPreferencesNote($context);
+
+        if ($memoryNote !== null) {
+            $lines[] = $memoryNote;
         }
 
         $trend = $this->describeMonthlyTrend($byMonth);
@@ -182,8 +184,8 @@ class ResponseFormatterService
             $lines[] = 'Ask about a specific category or time range if you want a deeper look.';
         }
 
-        if ($this->hasIgnoredCategories($context)) {
-            $suggestions[] = 'I skipped categories you asked me to ignore when summarizing patterns.';
+        if ($this->memoryPreferencesNote($context) !== null) {
+            $suggestions[] = 'Excluded categories come from your saved preferences only — raw totals are unchanged in the database.';
         }
 
         $suggestions[] = 'Review recurring charges monthly to catch price increases early.';
@@ -262,9 +264,7 @@ class ResponseFormatterService
      */
     private function formatFinancialSummary(array $data): array
     {
-        $topCategories = $data['top_categories'] ?? [];
-        $lines = [(string) ($data['summary'] ?? 'Here is your financial summary for this month.')];
-
+        $message = (string) ($data['summary'] ?? 'Here is your financial summary for this month.');
         $suggestions = [];
 
         if (($data['subscription_count'] ?? 0) > 0) {
@@ -280,10 +280,13 @@ class ResponseFormatterService
         }
 
         return [
-            'message' => $this->joinLines($lines),
+            'message' => $message,
             'breakdown' => [
                 'total_spending_this_month' => $this->formatMoney((float) ($data['total_spending_this_month'] ?? 0)),
-                'top_categories' => $topCategories,
+                'transaction_count' => $data['transaction_count'] ?? 0,
+                'top_category' => $data['top_category'] ?? null,
+                'simple_insight' => $data['simple_insight'] ?? null,
+                'top_categories' => $data['top_categories'] ?? [],
                 'unusual_spikes' => $data['unusual_spikes'] ?? [],
                 'subscription_count' => $data['subscription_count'] ?? 0,
                 'period' => $data['period'] ?? [],
@@ -593,6 +596,22 @@ class ResponseFormatterService
     /**
      * @param  array<string, mixed>  $context
      */
+    private function memoryPreferencesNote(array $context): ?string
+    {
+        $ignored = $this->ignoredCategories($context);
+
+        if ($ignored === []) {
+            return null;
+        }
+
+        $labels = array_map(fn (string $category) => $this->formatLabel($category), $ignored);
+
+        return 'Ignoring '.implode(', ', $labels).' based on your saved preferences.';
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
     private function hasIgnoredCategories(array $context): bool
     {
         return $this->ignoredCategories($context) !== [];
@@ -684,7 +703,19 @@ class ResponseFormatterService
      */
     private function joinLines(array $lines): string
     {
-        return implode("\n", array_slice($lines, 0, 7));
+        $unique = [];
+
+        foreach ($lines as $line) {
+            if (! is_string($line) || $line === '') {
+                continue;
+            }
+
+            if (! in_array($line, $unique, true)) {
+                $unique[] = $line;
+            }
+        }
+
+        return implode("\n", array_slice($unique, 0, 7));
     }
 
     private function formatMoney(float $amount): string

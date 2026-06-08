@@ -62,7 +62,7 @@ async function sendMessage() {
         const payload = await response.json();
 
         if (!response.ok || !payload.success) {
-            throw new Error(payload.error || 'Failed to get a response.');
+            throw new Error(payload.data?.message || payload.error || 'Failed to get a response.');
         }
 
         messages.value.push({
@@ -154,7 +154,7 @@ async function submitReceipt() {
         const payload = await response.json();
 
         if (!response.ok || !payload.success) {
-            throw new Error(payload.error || 'Failed to process receipt.');
+            throw new Error(payload.data?.message || payload.error || 'Failed to process receipt.');
         }
 
         if (payload.data?.extracted_text) {

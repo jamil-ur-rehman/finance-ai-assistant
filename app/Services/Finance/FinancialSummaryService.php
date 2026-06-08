@@ -15,7 +15,10 @@ class FinancialSummaryService
      * @param  array{exclude_categories?: array<int, string>, exclude_merchants?: array<int, string>}  $filters
      * @return array{
      *     total_spending_this_month: float,
+     *     top_category: array{name: string, amount: float}|null,
      *     top_categories: array<int, array{name: string, amount: float}>,
+     *     transaction_count: int,
+     *     simple_insight: string,
      *     unusual_spikes: array<int, array<string, mixed>>,
      *     subscription_count: int,
      *     summary: string,
@@ -35,21 +38,27 @@ class FinancialSummaryService
         $analytics = $this->spendingService->getAnalytics($userId, $monthFilters);
         $byCategory = $analytics['by_category'] ?? [];
         $totalSpend = (float) ($analytics['total_spend'] ?? 0);
+        $transactionCount = $this->spendingService->countTransactions($userId, $monthFilters);
 
         $topCategories = $this->topCategories($byCategory, 3);
+        $topCategory = $topCategories[0] ?? null;
         $spikes = $this->insightService->detectCategorySpikes($userId, $filters);
         $subscriptions = $this->insightService->detectSubscriptions($userId, $filters);
+        $simpleInsight = $this->buildSimpleInsight($totalSpend, $transactionCount, $topCategory, $spikes);
 
         $summary = $this->buildSummaryText(
             $totalSpend,
-            $topCategories,
-            $spikes,
-            count($subscriptions)
+            $transactionCount,
+            $topCategory,
+            $simpleInsight
         );
 
         return [
             'total_spending_this_month' => $totalSpend,
+            'top_category' => $topCategory,
             'top_categories' => $topCategories,
+            'transaction_count' => $transactionCount,
+            'simple_insight' => $simpleInsight,
             'unusual_spikes' => $spikes,
             'subscription_count' => count($subscriptions),
             'summary' => $summary,
@@ -81,41 +90,49 @@ class FinancialSummaryService
     }
 
     /**
-     * @param  array<int, array{name: string, amount: float}>  $topCategories
+     * @param  array{name: string, amount: float}|null  $topCategory
      * @param  array<int, array<string, mixed>>  $spikes
      */
-    private function buildSummaryText(float $totalSpend, array $topCategories, array $spikes, int $subscriptionCount): string
+    private function buildSimpleInsight(float $totalSpend, int $transactionCount, ?array $topCategory, array $spikes): string
     {
-        $lines = [];
-
-        $lines[] = sprintf(
-            'This month you have spent $%s so far.',
-            number_format($totalSpend, 2)
-        );
-
-        if ($topCategories !== []) {
-            $parts = array_map(
-                fn (array $category) => sprintf('%s ($%s)', $category['name'], number_format($category['amount'], 2)),
-                $topCategories
-            );
-            $lines[] = 'Top categories: '.implode(', ', $parts).'.';
+        if ($transactionCount === 0) {
+            return 'No transactions recorded yet this month.';
         }
 
         if ($spikes !== []) {
-            $spikeNames = array_map(
-                fn (array $spike) => (string) ($spike['category'] ?? 'unknown'),
-                array_slice($spikes, 0, 2)
-            );
-            $lines[] = 'Unusual spikes detected in: '.implode(', ', $spikeNames).'.';
-        } else {
-            $lines[] = 'No major category spikes compared to last month.';
+            $category = (string) ($spikes[0]['category'] ?? 'a category');
+
+            return ucfirst($category).' spending is significantly higher than last month.';
         }
 
-        $lines[] = sprintf(
-            'You have %d recurring subscription%s on record.',
-            $subscriptionCount,
-            $subscriptionCount === 1 ? '' : 's'
-        );
+        if ($topCategory !== null) {
+            return sprintf(
+                'Most of your spending is going to %s this month.',
+                $topCategory['name']
+            );
+        }
+
+        return 'Your spending is tracking normally this month.';
+    }
+
+    /**
+     * @param  array{name: string, amount: float}|null  $topCategory
+     */
+    private function buildSummaryText(float $totalSpend, int $transactionCount, ?array $topCategory, string $simpleInsight): string
+    {
+        $lines = [
+            sprintf('This month you have spent $%s across %d transaction%s.', number_format($totalSpend, 2), $transactionCount, $transactionCount === 1 ? '' : 's'),
+        ];
+
+        if ($topCategory !== null) {
+            $lines[] = sprintf(
+                'Top category: %s at $%s.',
+                $topCategory['name'],
+                number_format($topCategory['amount'], 2)
+            );
+        }
+
+        $lines[] = $simpleInsight;
 
         return implode(' ', $lines);
     }

@@ -196,4 +196,43 @@ class RuleBasedIntentClassifier
 
         return null;
     }
+
+    /**
+     * @return array{intent: string, confidence: float, parameters: array<string, mixed>}|null
+     */
+    public function keywordFallback(string $message): ?array
+    {
+        $normalized = strtolower(trim($message));
+
+        $parameters = [
+            'category' => $this->extractCategory($normalized),
+            'time_range' => $this->extractTimeRange($normalized) ?? 'this_month',
+            'merchant' => $this->extractMerchant($normalized),
+            'query_type' => null,
+            'receipt_text' => null,
+            'charge_descriptor' => null,
+        ];
+
+        if (preg_match('/\b(spent|spend|spending|how much|expense|expenses)\b/', $normalized)) {
+            $parameters['query_type'] = $parameters['category'] ? 'by_category' : 'total';
+
+            return ['intent' => 'spending_query', 'confidence' => 0.75, 'parameters' => $parameters];
+        }
+
+        if (preg_match('/\bbudget\b/', $normalized)) {
+            $parameters['query_type'] = 'budget_status';
+
+            return ['intent' => 'budget_query', 'confidence' => 0.75, 'parameters' => $parameters];
+        }
+
+        if (preg_match('/\b(balance|summary|overview|summarize)\b/', $normalized)) {
+            return ['intent' => 'financial_summary', 'confidence' => 0.75, 'parameters' => $parameters];
+        }
+
+        if (preg_match('/\b(suggest|recommend|cut|save)\b/', $normalized)) {
+            return ['intent' => 'suggestion_query', 'confidence' => 0.75, 'parameters' => $parameters];
+        }
+
+        return null;
+    }
 }
